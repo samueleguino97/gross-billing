@@ -1,0 +1,20 @@
+{
+  "type": "module",
+  "module": "esnext",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.6.0",
+    "dayjs": "^1.11.11",
+    "hono": "^4.3.10",
+    "soap": "^1.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.3.0",
+    "@types/bun": "latest",
+    "eslint": "^9.3.0",
+    "typescript": "^5.4.5",
+    "typescript-eslint": "^7.10.0"
+  }
+}

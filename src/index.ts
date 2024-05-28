@@ -1,0 +1,197 @@
+import { Hono } from "hono";
+import {
+  getFacturacionCodigosClient,
+  getFacturacionOperacionesClient,
+  getFacturacionSincronizacionClient,
+} from "./lib/facturacion";
+import { db } from "./lib/db";
+import dayjs = require("dayjs");
+const app = new Hono();
+app.get("/sync/citypes", async (c) => {
+  const client = await getFacturacionSincronizacionClient();
+  await client.verificarComunicacionAsync({});
+  const cuis = await db.execute(
+    "SELECT * FROM cuis where datetime(untilDate) > datetime()",
+  );
+
+  const result = await client.sincronizarParametricaTipoDocumentoIdentidadAsync(
+    {
+      SolicitudSincronizacion: {
+        codigoSistema: process.env.SIAT_SYSTEM_CODE,
+        nit: process.env.SIAT_NIT,
+        cuis: cuis.rows[0].code?.toString(),
+        codigoAmbiente: process.env.SIAT_ENV,
+        codigoPuntoVenta: "0",
+        codigoSucursal: "0",
+      },
+    },
+  );
+  return c.json(result);
+});
+app.get("/verify-nit/:nit", async (c) => {
+  const client = await getFacturacionCodigosClient();
+  await client.verificarComunicacionAsync({});
+
+  const nit = c.req.param("nit");
+  const activeCuis = await db.execute(
+    "SELECT * FROM cuis where datetime(untilDate) > datetime()",
+  );
+
+  const [result] = await client.verificarNitAsync({
+    SolicitudVerificarNit: {
+      codigoModalidad: process.env.SIAT_MODE,
+      nit: process.env.SIAT_NIT,
+      cuis: activeCuis.rows[0].code?.toString(),
+      codigoSistema: process.env.SIAT_SYSTEM_CODE,
+      codigoAmbiente: process.env.SIAT_ENV,
+      codigoSucursal: "0",
+      nitParaVerificacion: nit,
+    },
+  });
+
+  return c.json(result);
+});
+app.get("pos-list", async (c) => {
+  const activeCuis = await db.execute(
+    "SELECT * FROM cuis where datetime(untilDate) > datetime()",
+  );
+  const client = await getFacturacionOperacionesClient();
+  const [result] = await client.consultaPuntoVentaAsync({
+    SolicitudConsultaPuntoVenta: {
+      codigoSistema: process.env.SIAT_SYSTEM_CODE,
+      nit: process.env.SIAT_NIT,
+      codigoAmbiente: process.env.SIAT_ENV,
+      codigoSucursal: "0",
+      cuis: activeCuis.rows[0].code?.toString(),
+    },
+  });
+  return c.json(result);
+});
+app.get("register-pos", async (c) => {
+  const activeCuis = await db.execute(
+    "SELECT * FROM cuis where datetime(untilDate) > datetime()",
+  );
+  const client = await getFacturacionOperacionesClient();
+  const result = await client.registroPuntoVentaAsync({
+    SolicitudRegistroPuntoVenta: {
+      codigoSistema: process.env.SIAT_SYSTEM_CODE,
+      nit: process.env.SIAT_NIT,
+      codigoAmbiente: process.env.SIAT_ENV,
+      codigoSucursal: "0",
+      codigoTipoPuntoVenta: "5",
+      codigoModalidad: process.env.SIAT_MODE,
+      cuis: activeCuis.rows[0].code?.toString(),
+      descripcion: "Punto de venta de prueba",
+      nombrePuntoVenta: "Punto de venta de prueba",
+    },
+  });
+  console.log("result", result);
+  return c.json(result);
+});
+app.get("/cufd", async (c) => {
+  const activeCuis = await db.execute(
+    "SELECT * FROM cuis where datetime(untilDate) > datetime()",
+  );
+  const activeCufd = await db.execute(
+    "SELECT * FROM cufd where datetime(untilDate) > datetime()",
+  );
+  if (activeCufd.rows.length > 0) {
+    console.log("Found active CUFd");
+    return c.json({
+      code: activeCufd.rows[0].code,
+      validUntil: activeCufd.rows[0].untilDate,
+    });
+  }
+
+  const client = await getFacturacionCodigosClient();
+  await client.verificarComunicacionAsync({});
+  const result = await client.cufdAsync({
+    SolicitudCufd: {
+      codigoSistema: process.env.SIAT_SYSTEM_CODE,
+      nit: process.env.SIAT_NIT,
+      codigoAmbiente: process.env.SIAT_ENV,
+      codigoSucursal: "0",
+      codigoPuntoVenta: "0",
+      cuis: activeCuis.rows[0].code?.toString(),
+      codigoModalidad: process.env.SIAT_MODE,
+    },
+  });
+
+  if (
+    !result[0].RespuestaCufd ||
+    !result[0].RespuestaCufd.codigo ||
+    !result[0].RespuestaCufd.fechaVigencia
+  ) {
+    return c.json({
+      message: "No se pudo obtener el CUFd",
+    });
+  }
+
+  const untilDate = dayjs(result[0].RespuestaCufd?.fechaVigencia);
+
+  const res = {
+    code: result[0].RespuestaCufd?.codigo,
+
+    validUntil: untilDate.toISOString(),
+  };
+
+  await db.execute({
+    sql: "INSERT INTO cufd (code, untilDate) VALUES (?, ?)",
+    args: [res.code, res.validUntil],
+  });
+
+  return c.json(res);
+});
+app.get("/cuis", async (c) => {
+  const activeCuis = await db.execute(
+    "SELECT * FROM cuis where datetime(untilDate) > datetime()",
+  );
+
+  const isActive = activeCuis.rows.find((item) => {
+    if (!item.untilDate) return false;
+    return dayjs(item.untilDate?.toString()).isAfter(dayjs());
+  });
+  if (isActive) {
+    console.log("Found active cuis");
+    return c.json({
+      code: isActive.code,
+      validUntil: isActive.untilDate,
+    });
+  }
+  const client = await getFacturacionCodigosClient();
+  const cuisRequest = {
+    SolicitudCuis: {
+      codigoSistema: process.env.SIAT_SYSTEM_CODE,
+      nit: process.env.SIAT_NIT,
+      codigoAmbiente: process.env.SIAT_ENV,
+      codigoSucursal: "0",
+      codigoModalidad: process.env.SIAT_MODE,
+      codigoPuntoVenta: "0",
+    },
+  };
+  await client.verificarComunicacionAsync({});
+  const [result] = await client.cuisAsync(cuisRequest);
+
+  if (
+    !result.RespuestaCuis ||
+    !result.RespuestaCuis.codigo ||
+    !result.RespuestaCuis.fechaVigencia
+  ) {
+    return c.json({
+      message: "No se pudo obtener el CUIS",
+    });
+  }
+  const untilDate = dayjs(result.RespuestaCuis?.fechaVigencia);
+  const res = {
+    code: result.RespuestaCuis?.codigo,
+    validUntil: untilDate.toISOString(),
+  };
+
+  await db.execute({
+    sql: "INSERT INTO cuis (code, untilDate) VALUES (?, ?)",
+    args: [res.code, res.validUntil],
+  });
+  return c.json(res);
+});
+
+export default app;
